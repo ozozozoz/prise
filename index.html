@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#150c2b">
+<title>·</title>
+<style>
+  *{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html,body{
+    margin:0; height:100%; overflow:hidden;
+    background: radial-gradient(ellipse at 50% 32%, #3a1030 0%, #1b1035 45%, #0d0720 100%);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    color:#fff3f6; overscroll-behavior:none;
+  }
+  #lock{
+    position:fixed; inset:0;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    padding: 0 34px calc(env(safe-area-inset-bottom,0px) + 34px);
+    transition: opacity .5s ease;
+  }
+  #lock.gone{ opacity:0; pointer-events:none; }
+  .heart{ font-size:42px; filter: drop-shadow(0 0 22px rgba(255,130,170,.75)); }
+  h1{ margin: 22px 0 6px; font-size:20px; font-weight:400; letter-spacing:3px; }
+  .hint{
+    font-size:13px; line-height:1.7; text-align:center;
+    color:rgba(255,243,246,.5); margin-bottom:26px;
+  }
+  input{
+    width: min(78vw, 300px); padding: 15px 18px;
+    font-size:17px; text-align:center; letter-spacing:2px;
+    color:#fff3f6; background: rgba(255,255,255,.07);
+    border:1px solid rgba(255,255,255,.18); border-radius:14px;
+    outline:none; transition: border-color .25s ease, background .25s ease;
+  }
+  input:focus{ border-color: rgba(255,150,185,.75); background: rgba(255,255,255,.11); }
+  button{
+    margin-top:18px; padding:13px 52px;
+    font-size:16px; letter-spacing:4px; text-indent:4px; font-weight:600;
+    color:#4b1027; border:0; border-radius:99px; cursor:pointer;
+    background: linear-gradient(180deg,#ffe6ef,#ffb3c8);
+    box-shadow: 0 12px 34px rgba(255,120,160,.4);
+    transition: transform .15s ease;
+  }
+  button:active{ transform: scale(.95); }
+  button:disabled{
+    background: rgba(255,255,255,.1); color: rgba(255,243,246,.45);
+    box-shadow:none; cursor:default; letter-spacing:2px;
+  }
+  .bar{
+    width: min(78vw, 300px); height:3px; margin-top:20px;
+    border-radius:99px; background: rgba(255,255,255,.13); overflow:hidden;
+  }
+  .bar i{
+    display:block; height:100%; width:0%;
+    background: linear-gradient(90deg,#ff8fb0,#ffd79a);
+    transition: width .2s linear;
+  }
+  .msg{
+    margin-top:16px; height:20px; font-size:13px;
+    color:#ff9db8; opacity:0; transition: opacity .3s ease;
+  }
+  .msg.on{ opacity:1; }
+  .shake{ animation: sh .42s; }
+  @keyframes sh{
+    0%,100%{ transform:translateX(0); }
+    20%{ transform:translateX(-9px); }
+    40%{ transform:translateX(8px); }
+    60%{ transform:translateX(-5px); }
+    80%{ transform:translateX(3px); }
+  }
+</style>
+</head>
+<body>
+<div id="lock">
+  <div class="heart">💗</div>
+  <h1>这里有一份礼物</h1>
+  <div class="hint">一个对我们很重要的日子</div>
+  <input id="pw" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="暗号">
+  <button id="go" disabled>加载中 0%</button>
+  <div class="bar"><i id="fill"></i></div>
+  <div class="msg" id="msg">暗号不对，再想想~</div>
+</div>
+
+<script>
+var ITER = 210000;
+var VER = "fd92e1147d2d";
+var payload = null, key = null, musicPromise = null, musicUrl = "";
+var headPromise = null, headUrl = "";
+var headRawP = null, fullRawP = null;      // 提前下好、还没解密的原始字节
+var lock = document.getElementById("lock");
+var input = document.getElementById("pw");
+var go = document.getElementById("go");
+var fill = document.getElementById("fill");
+var msg = document.getElementById("msg");
+var working = false;
+
+/* ---- 一边显示锁屏，一边在后台下载本体 ---- */
+var xhr = new XMLHttpRequest();
+xhr.open("GET", "payload.bin?v=" + VER, true);
+xhr.responseType = "arraybuffer";
+xhr.onprogress = function (e) {
+  if (e.lengthComputable) setPct(e.loaded / e.total);
+};
+xhr.onload = function () {
+  if (xhr.status >= 200 && xhr.status < 300 && xhr.response && xhr.response.byteLength) {
+    payload = new Uint8Array(xhr.response);
+    setPct(1);
+    go.disabled = false;
+    go.textContent = "打 开";
+    preloadMusic();
+  } else {
+    fail("加载失败，刷新一下试试");
+  }
+};
+xhr.onerror = function () {
+  fail("要用网址打开才行（不能直接双击本地文件）");
+};
+xhr.send();
+
+function setPct(p) {
+  if (p > 1) p = 1;
+  fill.style.width = Math.round(p * 100) + "%";
+  if (go.disabled) go.textContent = "加载中 " + Math.round(p * 100) + "%";
+}
+function fail(text) {
+  msg.textContent = text;
+  msg.classList.add("on");
+  go.textContent = "打开失败";
+}
+
+/* ---- 提前把音乐下下来（下载不需要暗号，解密才需要） ----
+
+   本体一到位就开始，趁她输暗号、看封面这段时间把音频拉完。
+   先拉「开头小片段」，再拉整首：别让两个大文件抢同一条窄带宽。 */
+function fetchBytes(name) {
+  return fetch(name + "?v=" + VER).then(function (r) {
+    if (!r.ok) throw new Error(name + " HTTP " + r.status);
+    return r.arrayBuffer();
+  }).then(function (buf) { return new Uint8Array(buf); });
+}
+
+var preloading = false;
+function preloadMusic() {
+  if (preloading) return;
+  preloading = true;
+  headRawP = fetchBytes("music-head.bin").catch(function () { return null; });
+  fullRawP = headRawP.then(function () {
+    return fetchBytes("music.bin");
+  }).catch(function () { return null; });
+}
+
+/* ---- 解密 ---- */
+function derive(pw) {
+  var enc = new TextEncoder();
+  return crypto.subtle.importKey("raw", enc.encode(pw), "PBKDF2", false, ["deriveKey"])
+    .then(function (base) {
+      return crypto.subtle.deriveKey(
+        { name: "PBKDF2", salt: payload.slice(0, 16), iterations: ITER, hash: "SHA-256" },
+        base, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+    });
+}
+
+function tryOpen() {
+  if (working || !payload) return;
+  var pw = input.value;
+  if (!pw) { input.focus(); return; }
+  working = true;
+  go.disabled = true;
+  msg.classList.remove("on");
+  go.textContent = "正在打开…";
+
+  derive(pw).then(function (k) {
+    key = k;
+    return crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: payload.slice(16, 28) }, k, payload.slice(28));
+  }).then(function (plain) {
+    var html = new TextDecoder().decode(plain);
+    // 解密成功后立刻在后台把音乐也拉下来解开，
+    // 这样她点「开始」时音乐是现成的，能在手势里同步播放
+    window.__b30music = loadMusic;
+    window.__b30musicHead = loadMusicHead;
+    loadMusic();
+    loadMusicHead();
+    lock.classList.add("gone");
+    setTimeout(function () {
+      document.open();
+      document.write(html);
+      document.close();
+    }, 360);
+  }).catch(function () {
+    working = false;
+    go.disabled = false;
+    go.textContent = "打 开";
+    msg.classList.add("on");
+    input.classList.add("shake");
+    setTimeout(function () { input.classList.remove("shake"); }, 450);
+    if (navigator.vibrate) { try { navigator.vibrate(60); } catch (e) {} }
+    input.select();
+  });
+}
+
+/* ---- 音乐：单独的加密文件，解密成 blob 地址（下好的就直接用缓存字节） ---- */
+function bytesFor(rawP, name) {
+  return (rawP || Promise.resolve(null)).then(function (b) {
+    return (b && b.length) ? b : fetchBytes(name);   // 预下载没成，就自己现拉
+  });
+}
+
+function decryptToUrl(rawP, name) {
+  return bytesFor(rawP, name).then(function (d) {
+    return crypto.subtle.decrypt({ name: "AES-GCM", iv: d.slice(0, 12) }, key, d.slice(12));
+  }).then(function (plain) {
+    return URL.createObjectURL(new Blob([plain], { type: "audio/mpeg" }));
+  });
+}
+
+function loadMusic() {
+  if (musicPromise) return musicPromise;
+  musicPromise = decryptToUrl(fullRawP, "music.bin").then(function (url) {
+    musicUrl = url;
+    return musicUrl;
+  }).catch(function (e) {
+    // 别把失败结果缓存住：可能是刚发布完 CDN 还没就绪，
+    // 清掉缓存，游戏那边重试时就会再拉一次
+    window.__b30musicErr = String((e && e.message) || e);
+    musicPromise = null;
+    return "";
+  });
+  return musicPromise;
+}
+
+/* 开头片段：几十秒的小文件，点「开始」先放它，整首到了再接上 */
+function loadMusicHead() {
+  if (headPromise) return headPromise;
+  headPromise = decryptToUrl(headRawP, "music-head.bin").then(function (url) {
+    headUrl = url;
+    return headUrl;
+  }).catch(function () {
+    headPromise = null;
+    return "";
+  });
+  return headPromise;
+}
+
+go.addEventListener("click", tryOpen);
+input.addEventListener("keydown", function (e) { if (e.key === "Enter") tryOpen(); });
+setTimeout(function () { input.focus(); }, 400);
+</script>
+</body>
+</html>
